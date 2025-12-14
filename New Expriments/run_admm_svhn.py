@@ -336,10 +336,39 @@ def run_experiment_seed(seed, method_name=METHOD_NAME, admm_params=None):
     print("Saved seed results to", seed_fname)
     return seed_fname, out
 
-seed_files, seed_outputs = [], []
-for s in SEEDS:
-    fname, out = run_experiment_seed(s, method_name=METHOD_NAME, admm_params=None)
-    seed_files.append(fname)
-    seed_outputs.append(out)
-
-print("All seeds completed.")
+if __name__ == "__main__":
+    seed_files, seed_outputs = [], []
+    for s in SEEDS:
+        fname, out = run_experiment_seed(s, method_name=METHOD_NAME)
+        seed_files.append(fname)
+        seed_outputs.append(out)
+    min_epochs = 0 if not seed_outputs else min(len(o['training_history']['epoch']) for o in seed_outputs)
+    metrics = ['std_acc', 'robust_acc', 'epoch_time', 'cumulative_time', 'overlap', 'selection_stability']
+    agg_history = {'epoch': list(range(1, min_epochs + 1))}
+    for m in metrics:
+        if m in seed_outputs[0]['training_history']:
+            arr = np.array([o['training_history'][m][:min_epochs] for o in seed_outputs], dtype=float)
+            agg_history[f'{m}_mean'] = list(np.nanmean(arr, axis=0))
+            agg_history[f'{m}_std'] = list(np.nanstd(arr, axis=0, ddof=1))
+    final_summaries = [o['final_summary'] for o in seed_outputs]
+    aggregate_output = {
+        'experiment_name': f"{seed_outputs[0]['experiment_name'].split('_seed')[0]}_aggregate",
+        'seed_files': seed_files,
+        'hyperparameters': seed_outputs[0]['hyperparameters'],
+        'training_history_aggregate': agg_history,
+        'final_summary_aggregate': {
+            'final_std_acc_mean': float(np.nanmean([s['final_std_acc'] for s in final_summaries if s['final_std_acc'] is not None])),
+            'final_std_acc_std': float(np.nanstd([s['final_std_acc'] for s in final_summaries if s['final_std_acc'] is not None], ddof=1)),
+            'final_robust_acc_mean': float(np.nanmean([s['final_robust_acc'] for s in final_summaries if s['final_robust_acc'] is not None])),
+            'final_robust_acc_std': float(np.nanstd([s['final_robust_acc'] for s in final_summaries if s['final_robust_acc'] is not None], ddof=1)),
+            'final_autoattack_acc_mean': float(np.nanmean([s.get('final_autoattack_acc', 0.0) for s in final_summaries])),
+            'final_autoattack_acc_std': float(np.nanstd([s.get('final_autoattack_acc', 0.0) for s in final_summaries], ddof=1)),
+            'total_training_time_mean': float(np.nanmean([s['total_training_time'] for s in final_summaries if s['total_training_time'] is not None])),
+            'total_training_time_std': float(np.nanstd([s['total_training_time'] for s in final_summaries if s['total_training_time'] is not None], ddof=1))
+        }
+    }
+    agg_fname = os.path.join(OUT_DIR, f"{aggregate_output['experiment_name']}.json")
+    with open(agg_fname, 'w') as f:
+        json.dump(aggregate_output, f, indent=4)
+    print("\nSaved AGGREGATE results to", agg_fname)
+    print("All seeds completed.")

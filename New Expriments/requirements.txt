@@ -1,0 +1,4 @@
+numpy
+torch>=1.13.0
+torchvision>=0.14.0
+git+https://github.com/fra31/auto-attack.git
