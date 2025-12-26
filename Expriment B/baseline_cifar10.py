@@ -10,6 +10,7 @@ from torchvision import datasets, transforms, models
 import numpy as np
 from torch.optim.lr_scheduler import OneCycleLR
 
+# --- Added AutoAttack Import ---
 try:
     from autoattack import AutoAttack
     HAS_AUTOATTACK = True
@@ -39,11 +40,11 @@ PGD_STEPS_TRAIN, PGD_STEPS_EVAL = 20, 20
 
 SEEDS = [42, 43, 44]
 NUM_CLASSES = 10
-METHOD_NAME_ROBUST = f"RobustPGDAT_SVHN_bs{BATCH_SIZE}"
-OUT_DIR = "results_svhn_baseline"
+METHOD_NAME_ROBUST = f"RobustPGDAT_CIFAR10_bs{BATCH_SIZE}"
+OUT_DIR = "results_robust_pgdat_runs_cifar10"
 os.makedirs(OUT_DIR, exist_ok=True)
 
-print(f"Method: {METHOD_NAME_ROBUST}, Dataset: SVHN, BATCH_SIZE={BATCH_SIZE}, seeds={SEEDS}")
+print(f"Method: {METHOD_NAME_ROBUST}, BATCH_SIZE={BATCH_SIZE}, seeds={SEEDS}")
 
 transform_train = transforms.Compose([
     transforms.RandomCrop(32, padding=4),
@@ -52,13 +53,13 @@ transform_train = transforms.Compose([
 ])
 transform_test = transforms.Compose([transforms.ToTensor()])
 
-train_dataset = datasets.SVHN(root='./data', split='train', download=True, transform=transform_train)
-test_dataset  = datasets.SVHN(root='./data', split='test', download=True, transform=transform_test)
+train_dataset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform_train)
+test_dataset  = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform_test)
 
 train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True, drop_last=True)
 test_loader  = DataLoader(test_dataset,  batch_size=BATCH_SIZE, shuffle=False, num_workers=2, pin_memory=True)
 
-print("Loaded SVHN:", len(train_dataset), "train,", len(test_dataset), "test")
+print("Loaded CIFAR-10:", len(train_dataset), "train,", len(test_dataset), "test")
 
 def pgd_attack(model, images, labels, epsilon, alpha, iters):
     images = images.clone().detach().to(device)
@@ -101,29 +102,27 @@ def evaluate_per_class(model, data_loader, attack_fn=None, num_classes=NUM_CLASS
     per_class_acc = [(100.0 * correct_per_class[c] / total_per_class[c]) if total_per_class[c] > 0 else None for c in range(num_classes)]
     return overall_acc, per_class_acc
 
+# --- ADDED: AutoAttack Evaluation Function ---
 def run_autoattack_evaluation(model, data_loader):
     if not HAS_AUTOATTACK:
-        print("AutoAttack library missing. Skipping.")
         return 0.0
-    
     print("\n------------------------------------------------")
     print("Running AutoAttack (Standard Evaluation)...")
-    print("This might take a few minutes depending on GPU...")
     model.eval()
-
     l_x, l_y = [], []
     for x, y in data_loader:
         l_x.append(x)
         l_y.append(y)
     x_test = torch.cat(l_x, dim=0)
     y_test = torch.cat(l_y, dim=0)
+    
+    # Run attack
     adversary = AutoAttack(model, norm='Linf', eps=EPSILON, version='standard')
     with torch.no_grad():
         x_adv = adversary.run_standard_evaluation(x_test, y_test, bs=BATCH_SIZE)
-    print("Calculating final robust accuracy from AutoAttack outputs...")
+        
     dataset_adv = torch.utils.data.TensorDataset(x_adv, y_test)
     loader_adv = DataLoader(dataset_adv, batch_size=BATCH_SIZE, shuffle=False)
-    
     correct = 0
     total = 0
     with torch.no_grad():
@@ -133,7 +132,6 @@ def run_autoattack_evaluation(model, data_loader):
             _, pred = torch.max(out, 1)
             correct += (pred == y).sum().item()
             total += y.size(0)
-            
     final_acc = 100.0 * correct / total
     print(f"AutoAttack Final Accuracy: {final_acc:.2f}%")
     print("------------------------------------------------\n")
@@ -158,14 +156,12 @@ def run_experiment_seed_robust(seed, method_name=METHOD_NAME_ROBUST):
     np.random.seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-    print(f"\n=== Robust PGD-AT SVHN RUN seed {seed} ===")
+    print(f"\n=== Robust PGD-AT RUN seed {seed} ===")
     model = models.resnet18(weights=None, num_classes=NUM_CLASSES).to(device)
     optimizer = optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM, weight_decay=WEIGHT_DECAY)
     scheduler = OneCycleLR(optimizer, max_lr=LEARNING_RATE, epochs=SCHEDULER_CYCLE_EPOCHS, steps_per_epoch=len(train_loader))
-    
     history = {'epoch': [], 'std_acc': [], 'robust_acc': [], 'epoch_time': [], 'cumulative_time': [], 'overlap': [], 'selection_stability': [], 'per_class_std_acc': [], 'per_class_robust_acc': []}
     start_time = time.time()
-    
     for epoch in range(1, EPOCHS + 1):
         t0 = time.time()
         mean_overlap, stability = train_epoch_robust_collect(model, optimizer, scheduler, train_loader, epoch)
@@ -173,7 +169,6 @@ def run_experiment_seed_robust(seed, method_name=METHOD_NAME_ROBUST):
         robust_acc, per_class_rob = evaluate_per_class(model, test_loader, attack_fn=pgd_attack)
         epoch_time = time.time() - t0
         cumulative_time = time.time() - start_time
-        
         history['epoch'].append(epoch)
         history['std_acc'].append(std_acc)
         history['robust_acc'].append(robust_acc)
@@ -183,9 +178,9 @@ def run_experiment_seed_robust(seed, method_name=METHOD_NAME_ROBUST):
         history['selection_stability'].append(stability)
         history['per_class_std_acc'].append(per_class_std)
         history['per_class_robust_acc'].append(per_class_rob)
-        
         print(f"Seed {seed} Epoch {epoch}/{EPOCHS} | Std: {std_acc:.2f}% | Robust: {robust_acc:.2f}% | Time: {epoch_time:.1f}s")
     
+    # --- ADDED: AutoAttack at the End ---
     aa_acc = run_autoattack_evaluation(model, test_loader)
     print(f"Final AutoAttack Accuracy: {aa_acc:.2f}%")
 
@@ -196,50 +191,56 @@ def run_experiment_seed_robust(seed, method_name=METHOD_NAME_ROBUST):
         'final_summary': {
             'final_std_acc': history['std_acc'][-1] if history['std_acc'] else None, 
             'final_robust_acc': history['robust_acc'][-1] if history['robust_acc'] else None, 
-            'final_autoattack_acc': aa_acc,
+            'final_autoattack_acc': aa_acc, # Save AA result
             'total_training_time': history['cumulative_time'][-1] if history['cumulative_time'] else None
         }
     }
-    
     seed_fname = os.path.join(OUT_DIR, f"{method_name}_seed{seed}.json")
     with open(seed_fname, 'w') as f:
         json.dump(out, f, indent=4)
     print("Saved seed results to", seed_fname)
     return seed_fname, out
 
-if __name__ == "__main__":
-    seed_files, seed_outputs = [], []
-    for s in SEEDS:
-        fname, out = run_experiment_seed_robust(s, method_name=METHOD_NAME_ROBUST)
-        seed_files.append(fname)
-        seed_outputs.append(out)
-    min_epochs = 0 if not seed_outputs else min(len(o['training_history']['epoch']) for o in seed_outputs)
-    metrics = ['std_acc', 'robust_acc', 'epoch_time', 'cumulative_time', 'overlap', 'selection_stability']
-    agg_history = {'epoch': list(range(1, min_epochs + 1))}
-    for m in metrics:
-        if m in seed_outputs[0]['training_history']:
-            arr = np.array([o['training_history'][m][:min_epochs] for o in seed_outputs], dtype=float)
-            agg_history[f'{m}_mean'] = list(np.nanmean(arr, axis=0))
-            agg_history[f'{m}_std'] = list(np.nanstd(arr, axis=0, ddof=1))
-    final_summaries = [o['final_summary'] for o in seed_outputs]
-    aggregate_output = {
-        'experiment_name': f"{seed_outputs[0]['experiment_name'].split('_seed')[0]}_aggregate",
-        'seed_files': seed_files,
-        'hyperparameters': seed_outputs[0]['hyperparameters'],
-        'training_history_aggregate': agg_history,
-        'final_summary_aggregate': {
-            'final_std_acc_mean': float(np.nanmean([s['final_std_acc'] for s in final_summaries if s['final_std_acc'] is not None])),
-            'final_std_acc_std': float(np.nanstd([s['final_std_acc'] for s in final_summaries if s['final_std_acc'] is not None], ddof=1)),
-            'final_robust_acc_mean': float(np.nanmean([s['final_robust_acc'] for s in final_summaries if s['final_robust_acc'] is not None])),
-            'final_robust_acc_std': float(np.nanstd([s['final_robust_acc'] for s in final_summaries if s['final_robust_acc'] is not None], ddof=1)),
-            'final_autoattack_acc_mean': float(np.nanmean([s.get('final_autoattack_acc', 0.0) for s in final_summaries])),
-            'final_autoattack_acc_std': float(np.nanstd([s.get('final_autoattack_acc', 0.0) for s in final_summaries], ddof=1)),
-            'total_training_time_mean': float(np.nanmean([s['total_training_time'] for s in final_summaries if s['total_training_time'] is not None])),
-            'total_training_time_std': float(np.nanstd([s['total_training_time'] for s in final_summaries if s['total_training_time'] is not None], ddof=1))
-        }
+seed_files, seed_outputs = [], []
+for s in SEEDS:
+    fname, out = run_experiment_seed_robust(s, method_name=METHOD_NAME_ROBUST)
+    seed_files.append(fname)
+    seed_outputs.append(out)
+
+min_epochs = 0 if not seed_outputs else min(len(o['training_history']['epoch']) for o in seed_outputs)
+metrics = ['std_acc', 'robust_acc', 'epoch_time', 'cumulative_time', 'overlap', 'selection_stability']
+agg_history = {'epoch': list(range(1, min_epochs + 1))}
+for m in metrics:
+    arr = np.array([o['training_history'][m][:min_epochs] for o in seed_outputs], dtype=float)
+    agg_history[f'{m}_mean'] = list(np.nanmean(arr, axis=0))
+    agg_history[f'{m}_std'] = list(np.nanstd(arr, axis=0, ddof=1))
+per_class_std = np.array([o['training_history']['per_class_std_acc'][:min_epochs] for o in seed_outputs], dtype=float)
+per_class_rob = np.array([o['training_history']['per_class_robust_acc'][:min_epochs] for o in seed_outputs], dtype=float)
+
+# Aggregation updated for AA
+final_summaries = [o['final_summary'] for o in seed_outputs]
+aggregate_output = {
+    'experiment_name': f"{METHOD_NAME_ROBUST}_aggregate", 
+    'seed_files': seed_files, 
+    'hyperparameters': {'batch_size': BATCH_SIZE, 'learning_rate': LEARNING_RATE, 'epochs': EPOCHS}, 
+    'training_history_aggregate': agg_history, 
+    'per_class_std_mean_per_epoch': np.nanmean(per_class_std, axis=0).tolist() if min_epochs > 0 else [], 
+    'per_class_std_std_per_epoch': np.nanstd(per_class_std, axis=0, ddof=1).tolist() if min_epochs > 0 else [], 
+    'per_class_robust_mean_per_epoch': np.nanmean(per_class_rob, axis=0).tolist() if min_epochs > 0 else [], 
+    'per_class_robust_std_per_epoch': np.nanstd(per_class_rob, axis=0, ddof=1).tolist() if min_epochs > 0 else [], 
+    'final_summary_aggregate': {
+        'final_std_acc_mean': float(np.nanmean([o['final_summary']['final_std_acc'] for o in seed_outputs if o['final_summary']['final_std_acc'] is not None])), 
+        'final_std_acc_std': float(np.nanstd([o['final_summary']['final_std_acc'] for o in seed_outputs if o['final_summary']['final_std_acc'] is not None], ddof=1)), 
+        'final_robust_acc_mean': float(np.nanmean([o['final_summary']['final_robust_acc'] for o in seed_outputs if o['final_summary']['final_robust_acc'] is not None])), 
+        'final_robust_acc_std': float(np.nanstd([o['final_summary']['final_robust_acc'] for o in seed_outputs if o['final_summary']['final_robust_acc'] is not None], ddof=1)), 
+        'final_autoattack_acc_mean': float(np.nanmean([s.get('final_autoattack_acc', 0.0) for s in final_summaries])), # AA Mean
+        'final_autoattack_acc_std': float(np.nanstd([s.get('final_autoattack_acc', 0.0) for s in final_summaries], ddof=1)), # AA Std
+        'total_training_time_mean': float(np.nanmean([o['final_summary']['total_training_time'] for o in seed_outputs if o['final_summary']['total_training_time'] is not None])), 
+        'total_training_time_std': float(np.nanstd([o['final_summary']['total_training_time'] for o in seed_outputs if o['final_summary']['total_training_time'] is not None], ddof=1))
     }
-    agg_fname = os.path.join(OUT_DIR, f"{aggregate_output['experiment_name']}.json")
-    with open(agg_fname, 'w') as f:
-        json.dump(aggregate_output, f, indent=4)
-    print("\nSaved AGGREGATE results to", agg_fname)
-    print("All seeds completed.")
+}
+agg_fname = os.path.join(OUT_DIR, f"{METHOD_NAME_ROBUST}_aggregate.json")
+with open(agg_fname, 'w') as f:
+    json.dump(aggregate_output, f, indent=4)
+print("Saved aggregate results to", agg_fname)
+print("Seed files:", seed_files)
