@@ -15,7 +15,7 @@ from scipy.spatial.distance import cdist
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Device:", device)
 
-SEEDS = [41, 42, 43]
+SEEDS = [42, 43, 44]
 
 torch.manual_seed(SEEDS[0])
 np.random.seed(SEEDS[0])
